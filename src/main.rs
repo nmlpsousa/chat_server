@@ -17,7 +17,7 @@ struct Shared {
 
 impl Shared {
     async fn broadcast_message(&self, message: String, sender: SocketAddr) {
-        for (entry, tx) in self.clients.iter() {
+        for (entry, tx) in &self.clients {
             if entry == &sender {
                 continue;
             }
@@ -72,10 +72,9 @@ async fn handle_client(stream: TcpStream, socket_addr: SocketAddr, shared: Arc<M
                 }
                 result = stream.next() => match result {
                     Some(Ok(msg)) => {
-                        shared.lock().await.broadcast_message(msg, socket_addr).await
+                        shared.lock().await.broadcast_message(msg, socket_addr).await;
                     }
-                    Some(Err(_)) => break,
-                    None => break,
+                    Some(Err(_)) | None => break,
                 }
             }
         }
