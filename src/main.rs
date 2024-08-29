@@ -7,27 +7,8 @@ use std::error::Error;
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::sync::Arc;
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::Mutex;
+use tokio::sync::RwLock;
 use tokio_util::codec::{Framed, LinesCodec};
-
-#[derive(Debug)]
-struct Shared {
-    clients: HashMap<SocketAddr, Sender<String>>,
-}
-
-impl Shared {
-    async fn broadcast_message(&self, message: String, sender: SocketAddr) {
-        for (entry, tx) in &self.clients {
-            if entry == &sender {
-                continue;
-            }
-
-            if let Err(err) = tx.send(message.clone()).await {
-                error!("{err:?}");
-            }
-        }
-    }
-}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
@@ -40,9 +21,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     info!("Listening to {socket_addr}");
 
-    let shared = Arc::new(Mutex::new(Shared {
-        clients: HashMap::new(),
-    }));
+    let shared = Arc::new(RwLock::new(Shared::new()));
 
     loop {
         let (stream, socket_addr) = listener.accept().await?;
@@ -50,11 +29,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
     }
 }
 
-async fn handle_client(stream: TcpStream, socket_addr: SocketAddr, shared: Arc<Mutex<Shared>>) {
+async fn handle_client(stream: TcpStream, socket_addr: SocketAddr, shared: Arc<RwLock<Shared>>) {
     let mut stream = Framed::new(stream, LinesCodec::new());
     let (tx, rx) = async_channel::unbounded();
 
-    shared.lock().await.clients.insert(socket_addr, tx.clone());
+    shared.write().await.clients.insert(socket_addr, tx.clone());
 
     debug!("{shared:?}");
 
@@ -72,15 +51,39 @@ async fn handle_client(stream: TcpStream, socket_addr: SocketAddr, shared: Arc<M
                 }
                 result = stream.next() => match result {
                     Some(Ok(msg)) => {
-                        shared.lock().await.broadcast_message(msg, socket_addr).await;
+                        shared.read().await.broadcast_message(msg, socket_addr).await;
                     }
                     Some(Err(_)) | None => break,
                 }
             }
         }
 
-        let mut shared_lock = shared.lock().await;
+        let mut shared_lock = shared.write().await;
         shared_lock.clients.remove(&socket_addr);
         debug!("{:?}", shared_lock.clients);
     });
+}
+
+#[derive(Debug)]
+struct Shared {
+    clients: HashMap<SocketAddr, Sender<String>>,
+}
+
+impl Shared {
+    fn new() -> Self {
+        Self {
+            clients: HashMap::new(),
+        }
+    }
+    async fn broadcast_message(&self, message: String, sender: SocketAddr) {
+        for (entry, tx) in &self.clients {
+            if entry == &sender {
+                continue;
+            }
+
+            if let Err(err) = tx.send(message.clone()).await {
+                error!("{err:?}");
+            }
+        }
+    }
 }
